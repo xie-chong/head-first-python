@@ -18,7 +18,6 @@ windows 切换到当前需要发布的文件路径下，执行 py -3 setup.py sd
 
 linux   执行 python3 setup.py sdist
 
-```
 
  会在一个名为dist的文件夹中找到新创建的归档文件，dist文件夹也是由setuptools创建。
 
@@ -31,6 +30,7 @@ windows 切换到 dist 文件路径下，执行 py -3 -m pip install xxx-.tar.gz
 
 linux   执行 sudo python3 -m pip install xxx-.tar.gz
 
+```
 
 
 setup.py   
