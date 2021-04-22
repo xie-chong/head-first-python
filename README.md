@@ -9,8 +9,8 @@
 [09 | 上下文管理协议：挂接使用Python的with语句](#09)   
 [10 | 函数修饰符：包装函数](#10)   
 [11 | 异常处理：出问题了怎么办](#11)   
-[12 | 关于线程：处理等待](#12)   
-[13 | 高级迭代：疯狂地循环](#13)   
+[11‘ | 关于线程：处理等待](#11-2)   
+[12 | 高级迭代：疯狂地循环](#12)   
 
 
 ## [代码下载](http://python.itcarlow.ie/ed2/)
@@ -2099,4 +2099,764 @@ except Exception as err:
 一个变量，并创建更有信息含量的错误消息。
 
 
-### 回到我们的Web应用代码
+### 回到我们的Web应用代码p471
+
+前面我们指出 vsearch4web.py 的 do_search 函数中 log_request 调用可能存在问题（调用失败时该怎么做）。
+
+出现某种类型的错时，Web应用会提供一个不太友好的错误页面作为响应，这可能会让Web应用的用户很困惑。
+```
+mysql.connector.errors.InterfaceError
+```
+记录Web请求很重要，但用户对此不关心，他们只想看到搜索结果。
+
+
+### 安静的处理异常
+
+以一种适当的方式处理所产生的异常，使得Web应用的用户不会注意到这些异常。
+
+为 log_request 调用实现一个捕获所有异常的异常处理器
+```
+@app.route('/search4', methods=['POST'])
+def do_search() -> 'html':
+    """Extract the posted data; perform the search; return results."""
+    phrase = request.form['phrase']
+    letters = request.form['letters']
+    title = 'Here are your results:'
+    results = str(search4letters(phrase, letters))
+    try:
+        log_request(request, results)
+    except Exception as err:
+        print('***** Logging failed with this error:', str(err))
+    return render_template('results.html',
+                           the_title=title,
+                           the_phrase=phrase,
+                           the_letters=letters,
+                           the_results=results,)
+```
+
+
+关闭后端数据库
+```
+Can't connect to MySQL server on xxx
+```
+
+不正确的用户名连接数据库
+```
+Access denied for user xxx
+```
+
+访问一个不存在的表
+```
+Table 'xxx' dosen't exist'
+```
+
+也可以自己定制异常
+```
+def log_request(req: 'flask_request', res: str) -> None:
+    raise Exception("Something awful just happened.")
+
+    with UseDatabase(app.config['dbconfig']) as cursor:
+```
+
+
+### 处理其他数据库错误
+
+log_request 函数添加了数据库相关的异常处理，但 view_the_log 函数是由Flask调用的，不能在函数中编写代码来保护其调用。
+为此，我们可以使用UserDatabase上下文管理器来实现。
+
+首先考虑问题
+* 后端数据库可能不可用
+* 可能无法登陆正常工作的数据库
+* 成功登陆后，数据库查询可能失败
+* 可能发送其他（未预见的）情况
+
+
+### “更多错误”是不是意味着“更多except”？
+
+既然已经了解try/except，可以为 view_the_log 函数增加更多代码，对使用UseDatabase上下文管理器加以保护。
+```
+@app.route('/viewlog')
+@check_logged_in
+def view_the_log() -> 'html':
+    """Display the contents of the log file as a HTML table."""
+    try:
+        with UseDatabase(app.config['dbconfig']) as cursor:
+            _SQL = """select phrase, letters, ip, browser_string, results
+                    from log"""
+            cursor.execute(_SQL)
+            contents = cursor.fetchall()
+        # raise Exception("Some unknown exception.")
+        titles = ('Phrase', 'Letters', 'Remote_addr', 'User_agent', 'Results')
+        return render_template('viewlog.html',
+                            the_title='View Log',
+                            the_row_titles=titles,
+                            the_data=contents,)
+    except ConnectionError as err:
+        print('Is your database switched on? Error:', str(err))
+    except CredentialsError as err:
+        print('User-id/Password issues. Error:', str(err))
+    except SQLError as err:
+        print('Is your query correct? Error:', str(err))
+    except Exception as err:
+        print('Something went wrong:', str(err))    
+    return 'Error'
+```
+
+这种策略当然可行，但当我们针对 InterfaceError 异常增加一个 except 语句，就必须导入 mysql.connector模块（其中定义了这个特定的异常）。
+
+从表面上看，这好像不是一个大问题，不过事实上确实有问题。
+
+### 避免紧耦合的代码
+
+```
+import mysql.connector
+
+@app.route('/viewlog')
+@check_logged_in
+def view_the_log() -> 'html':
+    """Display the contents of the log file as a HTML table."""
+    try:
+        with UseDatabase(app.config['dbconfig']) as cursor:
+           ...
+ 
+    except mysql.connector.errors.InterfaceError as err:
+        print('Is your database switched on? Error:', str(err))
+    except Exception as err:
+        print('Something went wrong:', str(err))    
+    ...
+```
+
+这种方式是有问题的，因为现在vserach4web.py中的代码与MySql数据库是紧耦合的。
+
+如果将来替换数据库为PostgreSQL，对使用UserDatabase的所有代码都需要做修改。我们利用DBcm模块里的UserDatabase提供一个抽象，将vsearch4web.py中的代码与
+后端数据库解耦合。
+
+
+### 再看DBcm模块
+
+DBcm.py
+```
+import mysql.connector
+
+
+class UseDatabase:
+    def __init__(self, config: dict):
+        self.configuration = config
+
+    def __enter__(self) -> 'cursor':
+        self.conn = mysql.connector.connect(**self.configuration)
+        self.cursor = self.conn.cursor()
+        return self.cursor
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        self.conn.commit()
+        self.cursor.close()
+        self.conn.close()
+```
+
+useDatabase 实现了3个方法：
+* __init__ 在with执行之前提供了一个完成配置的机会
+* __enter__ 在with语句开始时执行
+* __exit__ 会保证在with代码组结束时执行
+
+
+### 创建定制异常
+
+我们将调整view_the_log，检查我们的定制异常而不是特定于数据库的mysql.connector.errors.InterfaceError。
+
+确定一个合适的名字，然后定义一个空类，它要继承Python的内置Exception类。一旦定义了一个定制异常，可以使用raise关键字产生这个异常。
+之后可以用try/except捕获（和处理）这个异常。
+
+```
+>>> class ConnectionError(Exception):
+	pass
+
+>>> raise ConnectionError('Cannot connect ... is it time to panic?')
+Traceback (most recent call last):
+  File "<pyshell#4>", line 1, in <module>
+    raise ConnectionError('Cannot connect ... is it time to panic?')
+ConnectionError: Cannot connect ... is it time to panic?
+>>>
+>>>
+>>> try:
+	raise ConnectionError('Whoops!')
+except ConnectionError as err:
+	print('Got:', str(err))
+
+	
+Got: Whoops!
+>>> 
+```
+
+修改DBcm模块
+```
+import mysql.connector
+
+class ConnectionError(Exception):
+    """Raised if the backend-database cannot be connected to."""
+    pass
+
+class UseDatabase:
+    def __init__(self, config: dict):
+        self.configuration = config
+
+    def __enter__(self) -> 'cursor':
+        try:
+            self.conn = mysql.connector.connect(**self.configuration)
+            self.cursor = self.conn.cursor()
+            return self.cursor
+        except mysql.connector.errors.InterfaceError as err:
+            raise ConnectionError(err) from err
+
+    def __exit__(self, exc_type, exc_value, exc_traceback) -> None:
+        self.conn.commit()
+        self.cursor.close()
+        self.conn.close()
+```
+
+修改vsearch4web.py(一定要从“DBcm”导入“ConnectonError”异常；“except”语句查找“ConnectionError”而不是“InterfaceError”)
+```
+from DBcm import UseDatabase,ConnectonError
+	...
+    except ConnectionError as err:
+        print('Is your database switched on? Error:', str(err))
+	...
+```
+
+
+### “DBcm”还会有什么问题？
+
+SQL查询相关的错误消息和凭据关联的错误消息是不同的，但产生的异常都是 mysql.connector.ProgrammingError。不同于凭据错误，SQL中的错误会
+导致执行with语句时产生一个异常。这意味这你需要在多个地方防范这个异常。
+
+凭据错误发生在__enter__，不会执行__exit__方法；SQL查询相关的错误发生在with，会执行__exit__方法。
+
+如果在使用with的地方用一个try/except语句来处理，这个策略有回到了写紧耦合代码的老路上。
+
+如果with代码组中产生的一个异常为捕获，with语句会把这个未捕获异常的详细信息传递到上下文管理器的__exit__方法。
+
+### 创建更多的定制异常
+
+第一个异常名为CredentialsError,__enter__方法中出现ProgrammingError时会产生这个异常。第二个异常名为SQLError，__exit__方法中报告
+ProgarammingError时会产生这个异常。
+
+```
+class CredentialsError(Exception):
+    """Raised if the database is up, but there's a login issue."""
+    pass
+
+
+class SQLError(Exception):
+    """Raised if the query caused problems."""
+    pass
+```
+
+__enter__中可能出现CredentialsError，所以调整这个方法的代码来反映。
+```
+	...
+	
+	   def __enter__(self) -> 'cursor':
+	        try:
+	            self.conn = mysql.connector.connect(**self.configuration)
+	            self.cursor = self.conn.cursor()
+	            return self.cursor
+	        except mysql.connector.errors.InterfaceError as err:
+	            raise ConnectionError(err) from err
+	        except mysql.connector.errors.ProgrammingError as err:
+	            raise CredentialsError(err) from err
+	...
+```
+
+修改csearch4web.py，增加捕获CredentialsError
+```
+@app.route('/viewlog')
+@check_logged_in
+def view_the_log() -> 'html':
+    try:
+        with UseDatabase(app.config['dbconfig']) as cursor:
+            _SQL = """select phrase, letters, ip, browser_string, results
+                    from log"""
+            cursor.execute(_SQL)
+            contents = cursor.fetchall()
+        # raise Exception("Some unknown exception.")
+        titles = ('Phrase', 'Letters', 'Remote_addr', 'User_agent', 'Results')
+        return render_template('viewlog.html',
+                            the_title='View Log',
+                            the_row_titles=titles,
+                            the_data=contents,)
+    except ConnectionError as err:
+        print('Is your database switched on? Error:', str(err))
+    except CredentialsError as err:
+        print('User-id/Password issues. Error:', str(err))
+    except Exception as err:
+        print('Something went wrong:', str(err))    
+    return 'Error'
+```
+
+
+### 处理SQLError有所不同
+
+ConnectionError和CredentialsError都是由于执行__enter__方法的代码时出现问题而产生的。产生这些异常时，不会执行相应的with语句。
+
+如果（出于某种原因）SQL查询中包含一个错误，MySQL Connector模块会生成一个ProgrammingError，这个异常出现在上下文管理器中（with
+语句中），但未在with语句中捕获，这个异常会作为3个参数传回__exit__方法：异常的类型、异常的值，以及于这个异常关联的回溯跟踪对象。
+如果没有产生任何异常，这3个参数（exe_type,exe_value和exe_traceback）都会涉资未None。
+
+在with代码组中产生一个异常但是未捕获时，上下文管理器会终止这个with代码组的代码，跳至__exit__方法，然后执行这个方法。
+
+
+### 当心代码的位置
+
+如果你计划为__exit__方法增加代码，最好把它放在__exit__中现有代码的后面，以保证肯定会执行这个方法现有代码（并保持上下文管理协议的语义）。
+
+
+### 完整代码
+vsearch4web.py
+```
+from flask import Flask, render_template, request, escape, session
+from vsearch import search4letters
+
+from DBcm import UseDatabase
+from checker import check_logged_in
+
+from time import sleep
+
+app = Flask(__name__)
+
+app.config['dbconfig'] = dbconfig = {'host':'10.83.16.43',
+            'user':'root',
+            'password':'zU!ykpx3EG)$$1e6',
+            'database':'acc_adapter',}
+
+
+@app.route('/login')
+def do_login() -> str:
+    session['logged_in'] = True
+    return 'You are now logged in.'
+
+
+@app.route('/logout')
+def do_logout() -> str:
+    session.pop('logged_in')
+    return 'You are now logged out.'
+
+
+def log_request(req: 'flask_request', res: str) -> None:
+    """Log details of the web request and the results."""
+
+    # raise Exception("Something awful just happened.")
+
+    with UseDatabase(app.config['dbconfig']) as cursor:
+        _SQL = """insert into log
+                  (phrase, letters, ip, browser_string, results)
+                  values
+                  (%s, %s, %s, %s, %s)"""
+        cursor.execute(_SQL, (req.form['phrase'],
+                              req.form['letters'],
+                              req.remote_addr,
+                              req.user_agent.browser,
+                              res, ))
+
+
+@app.route('/search4', methods=['POST'])
+def do_search() -> 'html':
+    """Extract the posted data; perform the search; return results."""
+    phrase = request.form['phrase']
+    letters = request.form['letters']
+    title = 'Here are your results:'
+    results = str(search4letters(phrase, letters))
+    try:
+        log_request(request, results)
+    except Exception as err:
+        print('***** Logging failed with this error:', str(err))
+    return render_template('results.html',
+                           the_title=title,
+                           the_phrase=phrase,
+                           the_letters=letters,
+                           the_results=results,)
+
+
+@app.route('/')
+@app.route('/entry')
+def entry_page() -> 'html':
+    """Display this webapp's HTML form."""
+    return render_template('entry.html',
+                           the_title='Welcome to search4letters on the web!')
+
+
+@app.route('/viewlog')
+@check_logged_in
+def view_the_log() -> 'html':
+    """Display the contents of the log file as a HTML table."""
+    try:
+        with UseDatabase(app.config['dbconfig']) as cursor:
+            _SQL = """select phrase, letters, ip, browser_string, results
+                    from log"""
+            cursor.execute(_SQL)
+            contents = cursor.fetchall()
+        # raise Exception("Some unknown exception.")
+        titles = ('Phrase', 'Letters', 'Remote_addr', 'User_agent', 'Results')
+        return render_template('viewlog.html',
+                            the_title='View Log',
+                            the_row_titles=titles,
+                            the_data=contents,)
+    except ConnectionError as err:
+        print('Is your database switched on? Error:', str(err))
+    except CredentialsError as err:
+        print('User-id/Password issues. Error:', str(err))
+    except SQLError as err:
+        print('Is your query correct? Error:', str(err))
+    except Exception as err:
+        print('Something went wrong:', str(err))    
+    return 'Error'
+
+
+app.secret_key = 'YouWillNeverGuessMySecretKey'
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+
+new-DBcm.py
+```
+"""The UseDatabase context manager for working with MySQL/MariaDB.
+
+For more information, see Chapters 7, 8, 9, and 11 of the 2nd edition of
+Head First Python.
+
+Simple example usage:
+
+    from DBcm import UseDatabase, SQLError
+
+    config = { 'host': '127.0.0.1',
+               'user': 'myUserid',
+               'password': 'myPassword',
+               'database': 'myDB' }
+
+    with UseDatabase(config) as cursor:
+        try:
+            _SQL = "select * from log"
+            cursor.execute(_SQL)
+            data = cursor.fetchall()
+        except SQLError as err:
+            print('Your query broke:', str(err))
+
+Enjoy, and have fun.  (Sorry: Python 3 only, due to type hints and new syntax).
+"""
+
+##############################################################################
+# Context manager for connecting/disconnecting to a database.
+##############################################################################
+
+import mysql.connector
+
+
+class ConnectionError(Exception):
+    """Raised if the backend-database cannot be connected to."""
+    pass
+
+
+class CredentialsError(Exception):
+    """Raised if the database is up, but there's a login issue."""
+    pass
+
+
+class SQLError(Exception):
+    """Raised if the query caused problems."""
+    pass
+
+
+class UseDatabase:
+    def __init__(self, config: dict):
+        """Add the database configuration parameters to the object.
+
+        This class expects a single dictionary argument which needs to assign
+        the appropriate values to (at least) the following keys:
+
+            host - the IP address of the host running MySQL/MariaDB.
+            user - the MySQL/MariaDB username to use.
+            password - the user's password.
+            database - the name of the database to use.
+
+        For more options, refer to the mysql-connector-python documentation.
+        """
+        self.configuration = config
+
+    def __enter__(self) -> 'cursor':
+        """Connect to database and create a DB cursor.
+
+        Return the database cursor to the context manager.
+        Raise ConnnectionError if the database can't be found.
+        Raise CredentialsError if the wrong username/password used.
+        """
+        try:
+            self.conn = mysql.connector.connect(**self.configuration)
+            self.cursor = self.conn.cursor()
+            return self.cursor
+        except mysql.connector.errors.InterfaceError as err:
+            raise ConnectionError(err) from err
+        except mysql.connector.errors.ProgrammingError as err:
+            raise CredentialsError(err) from err
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        """Destroy the cursor as well as the connection (after committing).
+
+        Raise ProgrammingError as an SQLError, and re-raise anything else.
+        """
+        self.conn.commit()
+        self.cursor.close()
+        self.conn.close()
+        if exc_type is mysql.connector.errors.ProgrammingError:
+            raise SQLError(exc_value)
+        elif exc_type:
+            raise exc_type(exc_value)
+```
+
+
+
+
+
+---
+<h1 id="11-2">11‘ | 关于线程：处理等待</h1>
+
+---
+
+
+TODO
+
+
+
+
+
+
+
+
+---
+<h1 id="12">12 | 高级迭代：疯狂地循环</h1>
+
+---
+
+
+
+TODO
+
+
+
+
+
+### 如何发现推导式
+
+* 如果发现代码用 **[** 和 **]** 包围，说明这是一个列表推导式。   
+* 如果发现代码用 **大括号** 包围，这就可能是一个推导式（集合推导式或字典推导式，字典推导式很容易发现，因为其中会使用冒号字符作为分隔符）。   
+* 如果发现代码用 **(** 和 **)** 包围，不要认为是“元组推导式”，这是一种特殊情况，实际上，根本不存在“元组推导式”。
+
+
+### 关于“元组推导式”？
+
+“元组推导式”的想法根本没有意义。元组四不可变的，一旦创建一个元组，它就不能再改变，这也意味着，不可能在代码中生成一个元组的值。
+
+
+创建一个新的空元组，不能追加到一个已有的元组，因为它是不可变的。
+```
+>>> name = ()
+>>> for n in ('John', 'Paul', 'George', 'Ringo'):
+	name.append(n)
+
+	
+Traceback (most recent call last):
+  File "<pyshell#4>", line 2, in <module>
+    name.append(n)
+AttributeError: 'tuple' object has no attribute 'append'
+>>> 
+```
+
+### 代码周围加小括号 == 生成器
+
+遇到一个看上去像列表推导式但用小括号包围的代码时，你看到的实际上是一个**生成器**。
+
+看下面示例，第二个循环与第一个循环只有很小的差别：列表推导式两边的中括号（循环1）被替换威小括号（循环2）：
+```
+>>> for i in [x*3 for x in [1, 2, 3, 4, 5]]:
+	print(i)
+
+	
+3
+6
+9
+12
+15
+>>> for i in (x*3 for x in [1, 2, 3, 4, 5]):
+	print(i)
+
+	
+3
+6
+9
+12
+15
+>>> 
+```
+
+循环2，看起来像一个列表推导式，但并不是：这是一个生成器。使用列表推导式的地方都可以使用生成器，会生成同样的结果。
+
+生成器和列表推导式可以生成通用的数据。不过，他们的执行方式不同。
+
+执行一个列表推导式时，它会在做其他处理之前生成**所有**数据。例如循环1中，这个佛如循环在列表推导式完成之前不会处理
+列表推导式生成的任何数据。这说明，如果一个列表推导式要花很长时间生成数据，其他代码就会延迟到这个列表推导式完成之后
+才能运行（存在2个问题，必须等待、占用内存）。
+
+生成器代码一旦生成数据，就会是否这个数据（没有等待、只需要一个数据项的内存）。
+
+
+### 使用列表推导式处理URL
+
+```
+>>> import requests
+>>> urls = ('http://acc-lxgm-adapter.dev.weshareholdings.com/','http://acc-repay.dev.weshareholdings.com/','http://acc-loan.dev.weshareholdings.com/')
+>>> 
+>>> for resp in [requests.get(url) for url in urls]:
+	print(len(resp.content), '->', resp.status_code, '->', resp.url)
+
+	
+341 -> 200 -> http://acc-lxgm-adapter.dev.weshareholdings.com/
+331 -> 200 -> http://acc-repay.dev.weshareholdings.com/
+338 -> 200 -> http://acc-loan.dev.weshareholdings.com/
+>>> 
+```
+
+你会注意到，进入for循环代码和看到结果之间有一个延迟。因为，列表推导式向for循环提供结果之前会处理urls中的所有URL。
+
+
+### 使用生成器处理URL
+
+```
+>>> import requests
+>>> urls = ('http://acc-lxgm-adapter.dev.weshareholdings.com/','http://acc-repay.dev.weshareholdings.com/','http://acc-loan.dev.weshareholdings.com/')
+>>> 
+>>> for resp in (requests.get(url) for url in urls):
+	print(len(resp.content), '->', resp.status_code, '->', resp.url)
+
+	
+341 -> 200 -> http://acc-lxgm-adapter.dev.weshareholdings.com/
+331 -> 200 -> http://acc-repay.dev.weshareholdings.com/
+338 -> 200 -> http://acc-loan.dev.weshareholdings.com/
+>>> 
+```
+
+无需等待。只要有数据就开始处理。
+
+### 使用生成器，发生了什么？
+
+如果比较列表推导式和生成器生成的结果，他们是一样的。不过，代码的行为却不同。
+
+列表推导式会等待所有数据都生成，然后才会把这些数据传送到正在等待的for循环，而生成器有所不同，只要数据可用他就会提供数据。
+这说明，使用生成器的循环响应性更好，而使用列表推导式的循环会让你等待。
+
+生成器确实很好，但这并不表示要把所有的列表推导式都替换为等价的生成器。需求决定选择，如果你可以接受等待，列表推导式就很好；
+否则，就应该考虑使用生成器。
+
+
+### 定义你的函数要做什么
+
+生成器还有一个有意思的用法：可以嵌套在函数中。
+
+### 生成器函数中使用 yield
+
+url_utils.py
+```
+import requests
+
+def gen_from_urls(urls: tuple) -> tuple:
+    for resp in (requests.get(url) for url in urls):
+        yield len(resp.content), resp.status_code, resp.url
+```
+
+代码要“返回” requests.get 函数完成GET请求的结果（返回给等待的“for”循环）。你可能想增加下面的代码行为作为for的代码组，
+**但不要这么做**。
+
+```
+return len(resp.content), resp.status_code, resp.url
+```
+
+一个函数执行一个return语句时，这个函数会终止。这里并不希望这样，因为gen_from_urls函数会在for循环中调用，每次调用这个函数
+时希望得到一个不同的结果元组。
+
+不过，如果不能执行return，该怎么做呢？
+
+要使用 **yield**。python中增加yield关键字就是为了支持**生成器函数**的创建，能用return的地方都可以使用yield。使用yield时，
+你的函数会成为一个生成器函数，可以从任何迭代器“调用”这个函数，在这里就是从for循环调用。
+
+
+### 跟踪生成器函数
+
+track_generate_function.py
+```
+from url_utils import gen_from_urls
+
+urls = ('http://acc-lxgm-adapter.dev.weshareholdings.com/','http://acc-repay.dev.weshareholdings.com/','http://acc-loan.dev.weshareholdings.com/')
+
+for resp_len, status, url, in gen_from_urls(urls):
+    print(resp_len, '->', status, '->', url)
+```
+
+ 在for循环（称为“调用代码”）中调用生成器函数gen_from_urls()。
+ ```
+ for resp_len, status, url, in gen_from_urls(urls):
+ ```
+ 
+ 解释器跳至gen_from_urls函数，开始执行它的代码，URL元组会复制到这个函数的唯一参数，然后执行生成器函数的for循环。
+ 这个for循环包含生成器，它取urls元组中的第一个URL，向指定的服务器发送一个GET请求。从服务器返回HTTP响应时，会执
+ 行yield语句。
+ 
+ 这里并不是执行代码然后移到urls元组中的下一个URL（也就是说，继续gen_from_urls中for循环的下一次迭代），yield会把
+ 它的3个数据传回调用代码。现在不会终止执行，gen_from_urls函数生成器会等待，就好像挂起来一样......
+ 
+ 数据（由yield传回）到达调用代码时，for循环的代码组会执行。由于这个代码组包含一个print BIF调用，所有会执行这行代
+ 码，在屏幕上显示第一个URL的结果。
+ 
+ 然后调用代码的for循环会迭代，从某种意义上讲，这会再次调用gen_from_urls。
+ 
+ 但不完全是这样，实际上是gen_from_urls从其挂起状态被唤醒，然后继续运行。gen_from_urls中的for循环迭代，取urls元组
+ 中的下一个URL，与这个URL的相应服务通信。从服务器返回HTTP响应时，会执行yield语句，将它的3个数据传回给调用代码（函数
+ 可以通过resp对象访问这些数据）。
+ 
+ 与前面一样，现在不会终止执行，gen_from_urls生成器函数会再一次等待，就好像挂起来一样......
+ 
+ 数据（由yield传回）到达调用代码时，for循环的代码组会再一次执行，显示第二组结果。
+ 
+ 调用代码的for循环会迭代，再一次“调用”gen_from_urls，这会再一次唤醒你的生成器函数。yield语句会执行，结果返回给调用代
+ 码，显示再次更新。
+ 
+ 此时URL元组已经处理完。所以生成器函数和调用代码的for循环都会终止。就好像这两个代码轮流执行一样（每次轮换时在二者之间传递数据）。
+ 
+ 
+ ### 在字典推导式中（以及“for”循环中）使用生成器函数
+
+use_generate_function_in_dict.py
+```
+import pprint
+from url_utils import gen_from_urls
+
+urls = ('http://acc-lxgm-adapter.dev.weshareholdings.com/','http://acc-repay.dev.weshareholdings.com/','http://acc-loan.dev.weshareholdings.com/')
+
+urls_res = {url: size for size, _, url in gen_from_urls(urls)}
+pprint.pprint(urls_res)
+```
+
+上面例子展示了将 gen_from_urls 用在一个字典推导式中。注意，这个新字典只需要存储URL（作为键）和登陆页面的大小（作为值）。
+由于不需要状态码，使用Python的**默认变量名**（一个下划线字符）让解释器忽略这个信息。
+
+
+### 章节内容回顾
+
+* 处理文件中的数据时，Python提供了多种选择。除了标准的open BIF，还可以使用标准库csv模块的功能来处理CSV格式的数据。
+* **方法链**允许用一行代码完成对数据的处理。```string.strip().split()```方法链在Python代码中很常见。
+* 注意方法链中方法的顺序。具体来讲，要注意各个方法返回的数据的类型（并确保类型的兼容性）。
+* 将数据从一种格式转换为另一种格式时所用的for循环可以改写为一个**推导式**。
+* 可以编写推导式处理现有的列表、字典和集合，列表推导式使用最广泛。有经验的Python程序员把这些构造称为listcomps（列表推导式）、
+dictcomps（字典推导式）和setcomps（集合推导式）。
+* **列表推导式**是用中括号包围的代码，**字典推导式**是用大括号包围的代码（有冒号分隔符）。**集合推导式**也是用大括号包围
+的代码（但没有字典推导式中的冒号）。
+* 没有“元组推导式”，因为元组是不可变的（所以试图动态创建元组是没有意义的）。
+* 如果发现推导式代码用小括号包围，你看到的是一个**生成器**（可以转换为一个函数，使用yield根据需要生成数据）
