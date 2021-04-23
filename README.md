@@ -2622,12 +2622,157 @@ class UseDatabase:
 
 ---
 
+如果一个代码要等待外部系统完成工作，这个代码称为“阻塞代码”，因为程序的执行会阻塞，直到等待结束才会继续。一般经验是，如果阻塞代码
+需要很长时间才能运行，这就不是一个好的代码。
 
-TODO
+比如我们的 log_request函数，它会等待cursor.execute 执行INSERT, view_the_log 函数，执行SQL SELECT 查询时它也会等待。
+
+然而这两个调用操作之后的逻辑是不同的。log_request函数中的 INSERT 不需要阻塞（调用代码并不关心何时写入，它只关心数据确实能写入，
+调用代码也不会等待响应），view_the_log 函数中的 SQL SELECT 需要阻塞（它必须等待得到数据后才能继续处理）。
+
+为此我们计划让 log_request函数独立于主Web应用执行，调整Web应用代码，让各个 log_request 调用并发地运行，这意味着你的Web应用不必
+再等待 log_request完成（不再有延迟，不论它需要多长时间执行），就可以为另一个用户的另一个请求提供服务。
+
+### 并发代码：有多种选择
+
+1. 第三方模块
+2. 标准库
+
+关于Python标准库的各种并发选择，完整的列表请见 https://docs.python.org/3/library/concurrency.html
+
+最有名的一个特性就是threading库，它为操作系统提供的多线程实现提供了一个高层接口。使用时，只需要从threading模块导入Thread类。
+```
+from threading import Thread
+```
+
+要创建一个线程，你要创建一个Thread对象，将一个名为target的参数指定为你希望这个线程执行的函数名，并为另一个名为args的命名参数提供
+其他参数（作为一个元组）。再把所创建的Thread对象赋值给你选择的一个变量。
 
 
+假设现在有一个需要执行30秒才能完成的函数```execute_slowly(glacial, plodding, leaden)```，使用多线程来实现。
+
+```
+from threading import Thread
+
+	...
+	
+t = Thread(taraget=execute_slowly, args=(glacial, plodding, leaden))
+
+t.start()
+```
+
+调用“start”时，将由“threading”模块执行与“t”线程相关的函数。调用t.start的代码会继续运行。
+
+调整我们的Web应用，使用 sleep(15) 为log_request代码增加延迟，这时候搜索功能将等待存储完成后才响应。
+
+调整 log_request 为threading多线程调用。
+```
+@app.route('/search4', methods=['POST'])
+def do_search() -> 'html':
+    """Extract the posted data; perform the search; return results."""
+    phrase = request.form['phrase']
+    letters = request.form['letters']
+    title = 'Here are your results:'
+    results = str(search4letters(phrase, letters))
+    try:
+        t = Thread(target=log_request, args=(request, results))
+        t.start()
+    except Exception as err:
+        print('***** Logging failed with this error:', str(err))
+    return render_template('results.html',
+                           the_title=title,
+                           the_phrase=phrase,
+                           the_letters=letters,
+                           the_results=results,)
+```
+
+Web应用搜索能正常执行，但保存数据时出错了。
+```
+127.0.0.1 - - [23/Apr/2021 10:44:29] "[37mPOST /search4 HTTP/1.1[0m" 200 -
+Exception in thread Thread-6:
+Traceback (most recent call last):
+  File "C:\Users\chong.xie\AppData\Local\Programs\Python\Python39\lib\threading.py", line 954, in _bootstrap_inner
+    self.run()
+  File "C:\Users\chong.xie\AppData\Local\Programs\Python\Python39\lib\threading.py", line 892, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\learn\python\mymodules\webapp\vsearch4web.py", line 43, in log_request
+    cursor.execute(_SQL, (req.form['phrase'],
+  File "C:\Users\chong.xie\AppData\Local\Programs\Python\Python39\lib\site-packages\werkzeug\local.py", line 347, in __getattr__
+    return getattr(self._get_current_object(), name)
+  File "C:\Users\chong.xie\AppData\Local\Programs\Python\Python39\lib\site-packages\werkzeug\local.py", line 306, in _get_current_object
+    return self.__local()
+  File "C:\Users\chong.xie\AppData\Local\Programs\Python\Python39\lib\site-packages\flask\globals.py", line 38, in _lookup_req_object
+    raise RuntimeError(_request_ctx_err_msg)
+RuntimeError: Working outside of request context.
+
+This typically means that you attempted to use functionality that needed
+an active HTTP request.  Consult the documentation on testing for
+information about how to avoid this problem.
+```
+
+这个消息来自Flask，而不是threading模块。
+```
+This typically means that you attempted to use functionality that needed
+an active HTTP request.  Consult the documentation on testing for
+information about how to avoid this problem.
+```
+
+执行这个线程时，第哦啊用代码（do_search函数）会继续执行。将执行render_template函数（这会很快完成），然后do_search函数结束。
+
+do_search结束时，与这个函数关联的所有数据（它的上下文）会由解释器回收。变量request，phrase，letters 和 results 都不再存在。不过，request 和 results
+变量会作为参数传递到log_request，log_request 会在15秒后访问者两个变量，但这两个变量已经不存在了，因为do_search结束。
 
 
+ 实际上，Flask 为此提供了一个很有帮助的修饰符。```copy_current_request_context```，这个修饰符可以确保HTTP请求仍时活动的，也就是说，如果调用一个函数
+ 时有活动的HTTP请求，以后在线程中执行这个函数时这个请求仍是活动的。
+ 
+### from flask import copy_current_request_context
+
+与其他修饰符一样，在Web应用代码最前面导入列表增加 copy_current_request_context 。用@语法将这个修饰符应用到一个现有函数。
+
+**注意：所修饰的函数必须在调用它的函数中定义，被修饰函数必须嵌套在其调用函数中（作为一个内部函数）**。
+
+对Web应用的vsearch4web.py代码做出相应的修改：
+1. 代码最前面导入模块```from flask import copy_current_request_context```
+2. 将 log_request 函数嵌套在 do_search 函数中
+3. 用 @copy_current_request_context 修饰 log_request
+ 
+```
+...
+@app.route('/search4', methods=['POST'])
+def do_search() -> 'html':
+    """Extract the posted data; perform the search; return results."""
+    @copy_current_request_context
+    def log_request(req: 'flask_request', res: str) -> None:
+        sleep(15);
+        with UseDatabase(app.config['dbconfig']) as cursor:
+            _SQL = """insert into log
+                  (phrase, letters, ip, browser_string, results)
+                  values
+                  (%s, %s, %s, %s, %s)"""
+            cursor.execute(_SQL, (req.form['phrase'],
+                              req.form['letters'],
+                              req.remote_addr,
+                              req.user_agent.browser,
+                              res, ))
+
+        
+    phrase = request.form['phrase']
+    letters = request.form['letters']
+    title = 'Here are your results:'
+    results = str(search4letters(phrase, letters))
+    try:
+        t = Thread(target=log_request, args=(request, results))
+        t.start()
+    except Exception as err:
+        print('***** Logging failed with this error:', str(err))
+    return render_template('results.html',
+                           the_title=title,
+                           the_phrase=phrase,
+                           the_letters=letters,
+                           the_results=results,)
+...
+```
 
 
 
@@ -2641,7 +2786,7 @@ TODO
 
 TODO
 
-
+page515
 
 
 
