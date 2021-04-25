@@ -2717,7 +2717,7 @@ an active HTTP request.  Consult the documentation on testing for
 information about how to avoid this problem.
 ```
 
-执行这个线程时，第哦啊用代码（do_search函数）会继续执行。将执行render_template函数（这会很快完成），然后do_search函数结束。
+执行这个线程时，调用用代码（do_search函数）会继续执行。将执行render_template函数（这会很快完成），然后do_search函数结束。
 
 do_search结束时，与这个函数关联的所有数据（它的上下文）会由解释器回收。变量request，phrase，letters 和 results 都不再存在。不过，request 和 results
 变量会作为参数传递到log_request，log_request 会在15秒后访问者两个变量，但这两个变量已经不存在了，因为do_search结束。
@@ -2782,12 +2782,470 @@ def do_search() -> 'html':
 
 ---
 
+我们的程序往往会在循环上花大量时间。谈到优化循环时，一般有两种方法：1. 改进循环语法（从而更容易地建立循环）2. 改进循环的执行（使循环
+更快地执行）。在Python2中，Python设计者增加了一个实现这两种方法的语言特性，它有一个奇怪的名字：**推导式(comprehension)** 。
+
+### CSV数据读取为列表
+
+```
+>>> import os
+>>> os.chdir('D:/learn/python/python-head-first/chapter12')
+>>> 
+>>> with open('buzzers.csv') as raw_data:
+	print(raw_data.read())
+
+	
+TIME,DESTINATION
+09:35,FREEPORT
+17:00,FREEPORT
+09:55,WEST END
+19:00,WEST END
+10:45,TREASURE CAY
+12:00,TREASURE CAY
+11:45,ROCK SOUND
+17:55,ROCK SOUND
+
+>>> 
+```
+
+标准库专门提供了一个名为csv的模块。
+
+```
+>>> import csv
+>>> with open('buzzers.csv') as data:
+	for line in csv.reader(data):
+		print(line)
+
+		
+['TIME', 'DESTINATION']
+['09:35', 'FREEPORT']
+['17:00', 'FREEPORT']
+['09:55', 'WEST END']
+['19:00', 'WEST END']
+['10:45', 'TREASURE CAY']
+['12:00', 'TREASURE CAY']
+['11:45', 'ROCK SOUND']
+['17:55', 'ROCK SOUND']
+>>> 
+```
+
+csv模块会从文件读取每一行原始数据，然后将它转换为一个包含两个数据项的列表（包括标题信息）。**注意：**返回的各个数据项的类型，它们都是字符串，
+尽管每个列表中的第一项（显然）表示一个时间。
+
+### CSV数据读取为字典
+
+```
+>>> with open('buzzers.csv') as data:
+	for line in csv.DictReader(data):
+		print(line)
+
+		
+{'TIME': '09:35', 'DESTINATION': 'FREEPORT'}
+{'TIME': '17:00', 'DESTINATION': 'FREEPORT'}
+{'TIME': '09:55', 'DESTINATION': 'WEST END'}
+{'TIME': '19:00', 'DESTINATION': 'WEST END'}
+{'TIME': '10:45', 'DESTINATION': 'TREASURE CAY'}
+{'TIME': '12:00', 'DESTINATION': 'TREASURE CAY'}
+{'TIME': '11:45', 'DESTINATION': 'ROCK SOUND'}
+{'TIME': '17:55', 'DESTINATION': 'ROCK SOUND'}
+```
+
+使用DictReader时，CSV文件的数据会作为一组字典返回，每个字典的键取自CSV文件的标题行，值来自后面的各行。
+
+```
+>>> import pprint
+
+>>> with open('buzzers.csv') as data:
+	ignore = data.readline()
+	flights = {}
+	for line in data:
+		k, v = line.split(',')
+		flights[k] = v
+
+		
+>>> pprint.pprint(flights)
+{'09:35': 'FREEPORT\n',
+ '09:55': 'WEST END\n',
+ '10:45': 'TREASURE CAY\n',
+ '11:45': 'ROCK SOUND\n',
+ '12:00': 'TREASURE CAY\n',
+ '17:00': 'FREEPORT\n',
+ '17:55': 'ROCK SOUND\n',
+ '19:00': 'WEST END\n'}
+>>> 
+```
+
+### 去除空白符
+
+```
+>>> import pprint
+
+>>> with open('buzzers.csv') as data:
+	ignore = data.readline()
+	flights = {}
+	for line in data:
+		k, v = line.strip().split(',')
+		flights[k] = v
+
+		
+>>> pprint.pprint(flights)
+{'09:35': 'FREEPORT',
+ '09:55': 'WEST END',
+ '10:45': 'TREASURE CAY',
+ '11:45': 'ROCK SOUND',
+ '12:00': 'TREASURE CAY',
+ '17:00': 'FREEPORT',
+ '17:55': 'ROCK SOUND',
+ '19:00': 'WEST END'}
+>>> 
+```
+
+左边是一个变量元组，右边的代码会生成一个值列表（如果把方法像这样串在一起，这称为一个“方法链”）
+```
+k, v = line.strip().split(',')
+```
+
+### 时间转换函数
+
+```
+>>> from datetime import datetime
+>>> 
+>>> def convert2ampm(time24: str) -> str:
+	return datetime.strptime(time24, '%H:%M').strftime('%I:%M%p')
 
 
-TODO
+>>> convert2ampm('19:00')
+'07:00PM'
+>>> 
+```
 
-page515
+关于字符串格式指示符的更多信息，参见https://docs.python.org/3/library/datetime.html#strftime-and-strptime-behavior
 
+
+
+```
+from datetime import datetime
+import pprint
+
+def convert2ampm(time24: str) -> str:
+    return datetime.strptime(time24, '%H:%M').strftime('%I:%M%p')
+```
+
+```
+from datetime import datetime
+import pprint
+
+def convert2ampm(time24: str) -> str:
+    return datetime.strptime(time24, '%H:%M').strftime('%I:%M%p')
+
+
+with open('buzzers.csv') as data:
+    ignore = data.readline()
+    flights = {}
+    for line in data:
+        k, v = line.strip().split(',')
+        flights[k] = v
+
+    pprint.pprint(flights)
+    print()
+
+    flights2 = {}
+    for k, v in flights.items():
+        flights2[convert2ampm(k)] = v.title()
+    pprint.pprint(flights2)
+```
+结果输出：
+```
+>>> 
+======== RESTART: D:/learn/python/python-head-first/chapter12/convert.py =======
+{'09:35': 'FREEPORT',
+ '09:55': 'WEST END',
+ '10:45': 'TREASURE CAY',
+ '11:45': 'ROCK SOUND',
+ '12:00': 'TREASURE CAY',
+ '17:00': 'FREEPORT',
+ '17:55': 'ROCK SOUND',
+ '19:00': 'WEST END'}
+
+{'05:00PM': 'Freeport',
+ '05:55PM': 'Rock Sound',
+ '07:00PM': 'West End',
+ '09:35AM': 'Freeport',
+ '09:55AM': 'West End',
+ '10:45AM': 'Treasure Cay',
+ '11:45AM': 'Rock Sound',
+ '12:00PM': 'Treasure Cay'}
+>>> 
+```
+
+
+### 发现代码中的模式了吗？
+
+* 每个“for”循环前面都创建了一个新的空数据结构；
+* 每个“for”循环代码组中包含的代码会处理现有数据，并基于所做的处理将数据增加到这个新数据结构。
+
+
+### 发现列表的模式
+
+```
+>>> fight_times = []
+>>> for ft in flights.keys():
+	fight_times.append(convert2ampm(ft))
+
+	
+>>> pprint.pprint(fight_times)
+['09:35AM',
+ '05:00PM',
+ '09:55AM',
+ '07:00PM',
+ '10:45AM',
+ '12:00PM',
+ '11:45AM',
+ '05:55PM']
+>>> 
+>>> 
+>>> destinations = []
+>>> for dest in flights.values():
+	destinations.append(dest.title())
+
+	
+>>> pprint.pprint(destinations)
+['Freeport',
+ 'Freeport',
+ 'West End',
+ 'West End',
+ 'Treasure Cay',
+ 'Treasure Cay',
+ 'Rock Sound',
+ 'Rock Sound']
+>>> 
+````
+
+
+### 将模式转换为推导式
+
+```
+destinations = []
+for dest in flights.values():
+	destinations.append(dest.title())
+```
+
+利用Python的内置推导式特性，可以把上面的3行代码改写为1行代码。
+
+1. 首先从一个新的空列表开始（并指定一个名字） ```more_dests = []```
+2. 迭代处理各个目的地（注意这里没有冒号） ```more_dests = [for dest in flights.values()]```
+3. 将转换后的数据追加到新列表，但没有具体调用“append” ```more_dests = [dest.title() for dest in flights.values()]```
+
+
+**学习推导式的原因：**
+1. 除了需要更少的代码，Python解释器还优化为可以尽可能快地运行推导式。这意味着推导式比等价的for循环代码执行得更快。
+2. 有些地方无法使用for循环，但是可以使用推到式。实际上，目前为止提供得所有推到式都出现再赋值操作符右边，而常规的
+for循环无法做到这一点。
+
+
+### 字典推导式
+
+```
+    flights2 = {}
+    for k, v in flights.items():
+        flights2[convert2ampm(k)] = v.title()
+```
+
+等价推导式
+
+```
+more_flights = {convert2ampm(k): v.title() for k, v in flights.items()}
+```
+
+### 用过滤器扩展推导式
+
+```
+>>> just_freeport = {}
+>>> for k, v in flights.items():
+	if v == 'FREEPORT':
+		just_freeport[convert2ampm(k)] = v.title()
+```
+
+根据v中的当前值完成过滤，像这样使用if来过滤数据是一种标准技术。这种过滤器也可以再推导式中使用。只需要取出if语句
+（去掉冒号），把它放在推导式的末尾。
+
+```
+>>> more_flights = {convert2ampm(k): v.title() for k, v in flights.items() if v == 'FREEPORT'}
+```
+
+
+### 用Python的方式处理复杂性
+
+```
++--------------------------------+
+|   {'05:00PM': 'Freeport',      |              
+| '05:55PM': 'Rock Sound',       |              +-----------------------------------------+
+| '07:00PM': 'West End',         |              |{'Freeport': ['09:35AM', '05:00PM'],     |
+| '09:35AM': 'Freeport',         |              |'Rock Sound': ['11:45AM', '05:55PM'],    |
+| '09:55AM': 'West End',         |  =========>> |'Treasure Cay': ['10:45AM', '12:00PM'],  |
+| '10:45AM': 'Treasure Cay',     |              | 'West End': ['09:55AM', '07:00PM']}     |
+| '11:45AM': 'Rock Sound',       |              +-----------------------------------------+
+| '12:00PM': 'Treasure Cay'}     |
++--------------------------------+
+```
+
+得到唯一目的地
+```
+>>> dests = set(fts.values())
+>>> pprint.pprint(dests)
+{'Treasure Cay', 'West End', 'Freeport', 'Rock Sound'}
+>>> 
+```
+
+抽取一个目的地的时间
+``` 
+>>> wests = []
+>>> for k, v in fts.items():
+	if v== 'West End':
+		wests.append(k)
+
+		
+>>> print(wests)
+['09:55AM', '07:00PM']
+>>> 
+```
+
+改为推导式
+```
+>>> wests2 = [k for k, v in fts.items() if v == 'West End']
+>>> print(wests2)
+['09:55AM', '07:00PM']
+```
+
+抽取所有目的地的飞行时间
+```
+>>> for dest in set(fts.values()):
+	print(dest, '->', [k for k, v in fts.items() if v == dest])
+
+	
+Treasure Cay -> ['10:45AM', '12:00PM']
+West End -> ['09:55AM', '07:00PM']
+Freeport -> ['09:35AM', '05:00PM']
+Rock Sound -> ['11:45AM', '05:55PM']
+>>> 
+```
+
+转换为推导式
+```
+>>> when = {}
+>>> for dest in set(fts.values()):
+	when[dest] = [k for k, v in fts.items() if v == dest]
+
+	
+>>> pprint.pprint(when)
+{'Freeport': ['09:35AM', '05:00PM'],
+ 'Rock Sound': ['11:45AM', '05:55PM'],
+ 'Treasure Cay': ['10:45AM', '12:00PM'],
+ 'West End': ['09:55AM', '07:00PM']}
+>>> 
+```
+
+把外层循环重写为一个字典推导式
+```
+>>> when2 = {dest: [k for k, v in fts.items() if v == dest] for dest in set(fts.values())}
+>>> 
+>>> pprint.pprint(when2)
+{'Freeport': ['09:35AM', '05:00PM'],
+ 'Rock Sound': ['11:45AM', '05:55PM'],
+ 'Treasure Cay': ['10:45AM', '12:00PM'],
+ 'West End': ['09:55AM', '07:00PM']}
+>>> 
+```
+
+这是目前为止最复杂的推导式。这个子字典推导式展示了推导式不同于等价for循环代码的一个特性：可以把推导式放在代码中几乎任何地方，而
+for循环做不到这一点，它只能作为语句出现在代码中（也就是说，不能作为表达式的一部分）。
+
+do_convert.py
+```
+
+from datetime import datetime
+import pprint
+
+def convert2ampm(time24: str) -> str:
+    return datetime.strptime(time24, '%H:%M').strftime('%I:%M%p')
+
+with open('buzzers.csv') as data:
+    ignore = data.readline()
+    flights = {}
+    for line in data:
+        k, v = line.strip().split(',')
+        flights[k] = v
+
+pprint.pprint(flights)
+print()
+
+fts = {convert2ampm(k): v.title() for k, v in flights.items()}
+
+pprint.pprint(fts)
+print()
+
+when = {dest: [k for k, v in fts.items() if v == dest] for dest in set(fts.values())}
+
+pprint.pprint(when)
+print()
+```
+
+结果输出
+```
+>>> 
+====== RESTART: D:\learn\python\python-head-first\chapter12\do_convert.py ======
+{'09:35': 'FREEPORT',
+ '09:55': 'WEST END',
+ '10:45': 'TREASURE CAY',
+ '11:45': 'ROCK SOUND',
+ '12:00': 'TREASURE CAY',
+ '17:00': 'FREEPORT',
+ '17:55': 'ROCK SOUND',
+ '19:00': 'WEST END'}
+
+{'05:00PM': 'Freeport',
+ '05:55PM': 'Rock Sound',
+ '07:00PM': 'West End',
+ '09:35AM': 'Freeport',
+ '09:55AM': 'West End',
+ '10:45AM': 'Treasure Cay',
+ '11:45AM': 'Rock Sound',
+ '12:00PM': 'Treasure Cay'}
+
+{'Freeport': ['09:35AM', '05:00PM'],
+ 'Rock Sound': ['11:45AM', '05:55PM'],
+ 'Treasure Cay': ['10:45AM', '12:00PM'],
+ 'West End': ['09:55AM', '07:00PM']}
+
+>>> 
+```
+
+
+### 集合推导式的实际使用
+
+集合推导式（或简写为setcomp）允许你用一行代码创建一个新的集合。集合推导式用大括号包围，字典推导式也是如此，为了区分二者，
+可以在字典中寻找冒号字符作为分隔符，而在集合中，冒号没有任何意义。
+
+```
+>>> vowels = {'a', 'e', 'i', 'o', 'u'}
+>>> message = "Don't forget to pack your towel."
+>>> found = set()
+>>> for v in vowels:
+	if v in message:
+		found.add(v)
+
+		
+>>> print(found)
+{'o', 'a', 'u', 'e'}
+>>> 
+```
+
+推导式模式
+```
+>>> found2 = {v for v in vowels if v in message}
+>>> print(found2)
+{'o', 'a', 'u', 'e'}
+```
 
 
 ### 如何发现推导式
